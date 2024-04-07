@@ -1,5 +1,6 @@
 #include "test_utils.h"
 #include "rowpara_spmm.h"
+#include "opt_rp_spmm.h"
 #include "spmat_part.h"
 #include "mat_redist.h"
 #include "metis_mat_part.h"
@@ -8,16 +9,18 @@ int main(int argc, char **argv)
 {
     if (argc < 5)
     {
-        printf("Usage: %s <mtx-file> <num-of-B-col> <num-of-tests> <part-method> <check-correct>\n", argv[0]);
+        printf("Usage: %s <mtx-file> <num-of-B-col> <num-of-tests> <part-method> <check-correct> <opt-impl>\n", argv[0]);
         printf("<part-method>: 0 for native 1D partition, 1 for METIS 1D partition (symmetric matrix only)\n");
         printf("<check-correct>: 0 or 1, optional, default value is 0\n");
+        printf("<opt-impl>: 0/1 for unoptimized/optimized implementation, optional, default value is 1\n");
         return 255;
     }
     int glb_n  = atoi(argv[2]);
     int n_test = atoi(argv[3]);
     int method = atoi(argv[4]);
-    int chk_res = 0;
+    int chk_res = 0, use_opt = 1;
     if (argc >= 6) chk_res = atoi(argv[5]);
+    if (argc >= 7) use_opt = atoi(argv[6]);
     int need_symm = 0;
     if (method) need_symm = 1;
 
@@ -121,18 +124,35 @@ int main(int argc, char **argv)
 
     // 4. Compute C := A * B
     rp_spmm_p rp_spmm = NULL;
-    rp_spmm_init(
-        loc_A_srow, loc_A_nrow, loc_A_rowptr, loc_A_colidx, loc_A_csrval, 
-        x_displs, glb_n, MPI_COMM_WORLD, &rp_spmm
-    );
-    // Warm up
-    rp_spmm_exec(rp_spmm, layout, loc_B, loc_B_ld, loc_C, loc_C_ld);
-    rp_spmm_clear_stat(rp_spmm);
+    opt_rp_spmm_p opt_rp_spmm = NULL;
+    if (my_rank == 0)
+    {
+        if (use_opt == 0) printf("Using unoptimized implementation\n");
+        else printf("Using optimized implementation\n");
+        fflush(stdout);
+    }
+    if (use_opt == 0)
+    {
+        rp_spmm_init(
+            loc_A_srow, loc_A_nrow, loc_A_rowptr, loc_A_colidx, loc_A_csrval, 
+            x_displs, glb_n, MPI_COMM_WORLD, &rp_spmm
+        );
+        rp_spmm_exec(rp_spmm, layout, loc_B, loc_B_ld, loc_C, loc_C_ld);  // Warm up
+        rp_spmm_clear_stat(rp_spmm);
+    } else {
+        opt_rp_spmm_init(
+            loc_A_srow, loc_A_nrow, loc_A_rowptr, loc_A_colidx, loc_A_csrval, 
+            x_displs, glb_n, MPI_COMM_WORLD, &opt_rp_spmm
+        );
+        opt_rp_spmm_exec(opt_rp_spmm, layout, loc_B, loc_B_ld, loc_C, loc_C_ld);  // Warm up
+        opt_rp_spmm_clear_stat(opt_rp_spmm);
+    }
     for (int i = 0; i < n_test; i++)
     {
         MPI_Barrier(MPI_COMM_WORLD);
         st = get_wtime_sec();
-        rp_spmm_exec(rp_spmm, layout, loc_B, loc_B_ld, loc_C, loc_C_ld);
+        if (use_opt == 0) rp_spmm_exec(rp_spmm, layout, loc_B, loc_B_ld, loc_C, loc_C_ld);
+        else opt_rp_spmm_exec(opt_rp_spmm, layout, loc_B, loc_B_ld, loc_C, loc_C_ld);
         MPI_Barrier(MPI_COMM_WORLD);
         et = get_wtime_sec();
         if (my_rank == 0) 
@@ -141,8 +161,14 @@ int main(int argc, char **argv)
             fflush(stdout);
         }
     }
-    rp_spmm_print_stat(rp_spmm);
-    rp_spmm_free(&rp_spmm);
+    if (use_opt == 0)
+    {
+        rp_spmm_print_stat(rp_spmm);
+        rp_spmm_free(&rp_spmm);
+    } else {
+        opt_rp_spmm_print_stat(opt_rp_spmm);
+        opt_rp_spmm_free(&opt_rp_spmm);
+    }
 
     // 5. Validate the result
     if (chk_res)

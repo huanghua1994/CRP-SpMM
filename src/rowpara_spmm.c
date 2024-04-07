@@ -449,13 +449,14 @@ void rp_spmm_print_stat(rp_spmm_p rp_spmm)
     rB_recv_max *= rp_spmm->glb_n;
     if (my_rank == 0)
     {
-        printf("rp_spmm_init() time = %.2f s\n", t_max[0]);    
-        printf("Total / rank-max SpMM comm size = %zu, %zu\n", rB_recv_sum, rB_recv_max);
+        printf("rp_spmm_init() time = %.2f s\n", t_max[0]);
+        printf("Total number of communicated B matrix elements        = %zu\n", rB_recv_sum);
+        printf("Max number of received B matrix elements on a process = %zu\n", rB_recv_max);
         printf("-------------------- Runtime (s) --------------------\n");
         printf("                                     avg         max\n");
-        printf("Pack B matrix for redistribution  %6.3f      %6.3f\n", t_avg[1], t_max[1]);
+        printf("Pack B matrix send buffer         %6.3f      %6.3f\n", t_avg[1], t_max[1]);
         printf("Redistribute B matrix             %6.3f      %6.3f\n", t_avg[2], t_max[2]);
-        printf("Unpack received B matrix data     %6.3f      %6.3f\n", t_avg[3], t_max[3]);
+        printf("Unpack received B matrix buffer   %6.3f      %6.3f\n", t_avg[3], t_max[3]);
         printf("Local SpMM                        %6.3f      %6.3f\n", t_avg[4], t_max[4]);
         printf("Total rp_spmm_exec()              %6.3f      %6.3f\n", t_avg[5], t_max[5]);
         printf("\n");
