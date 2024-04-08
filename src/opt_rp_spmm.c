@@ -343,8 +343,8 @@ void opt_rp_spmm_exec(
 
     // 5. Wait for all Isend and Irecv
     st = get_wtime_sec();
-    MPI_Waitall(n_recv, B_sreqs, MPI_STATUSES_IGNORE);
-    MPI_Waitall(n_send, B_rreqs, MPI_STATUSES_IGNORE);
+    MPI_Waitall(n_send, B_sreqs, MPI_STATUSES_IGNORE);
+    MPI_Waitall(n_recv, B_rreqs, MPI_STATUSES_IGNORE);
     et = get_wtime_sec();
     opt_rp_spmm->t_comm += et - st;
 
