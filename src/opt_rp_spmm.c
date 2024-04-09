@@ -404,6 +404,112 @@ void opt_rp_spmm_exec(
     opt_rp_spmm->n_exec++;
 }
 
+// Compute y := A * x
+void opt_rp_spmv_exec(opt_rp_spmm_p opt_rp_spmm, const double *x_local, double *y_local)
+{
+    if (opt_rp_spmm == NULL) return;
+    int my_rank    = opt_rp_spmm->my_rank;
+    int nproc      = opt_rp_spmm->nproc;
+    int *B_scnts   = opt_rp_spmm->B_scnts;
+    int *B_sdispls = opt_rp_spmm->B_sdispls;
+    int *B_sridxs  = opt_rp_spmm->B_sridxs;
+    int *B_rcnts   = opt_rp_spmm->B_rcnts;
+    int *B_rdispls = opt_rp_spmm->B_rdispls;
+
+    double st, et;
+    double exec_s = get_wtime_sec();
+
+    // 1. Allocate work memory
+    int n_send = 0, n_recv = 0;
+    const int B_local_nrow  = opt_rp_spmm->B_local_nrow;
+    const int B_remote_nrow = opt_rp_spmm->B_remote_nrow;
+    const int B_sbuf_nrow   = opt_rp_spmm->B_sdispls[nproc];
+    double *x_sbuf   = (double *) malloc(sizeof(double) * B_sbuf_nrow);
+    double *x_remote = (double *) malloc(sizeof(double) * B_remote_nrow);
+    MPI_Request *x_sreqs = (MPI_Request *) malloc(sizeof(MPI_Request) * nproc);
+    MPI_Request *x_rreqs = (MPI_Request *) malloc(sizeof(MPI_Request) * nproc);
+    ASSERT_PRINTF(
+        x_sbuf != NULL && x_remote != NULL && x_sreqs != NULL && x_rreqs != NULL, 
+        "Failed to allocate work memory\n"
+    );
+
+    // 2. Post all Irecv
+    st = get_wtime_sec();
+    for (int shift = 1; shift < nproc; shift++)
+    {
+        int p = (my_rank + shift) % nproc;
+        if (B_rcnts[p] == 0) continue;
+        MPI_Irecv(
+            x_remote + B_rdispls[p], B_rcnts[p], MPI_DOUBLE, 
+            p, p, opt_rp_spmm->comm, x_rreqs + n_recv
+        );
+        n_recv++;
+    }
+    et = get_wtime_sec();
+    opt_rp_spmm->t_comm += et - st;
+
+    // 3. Pack B send buffer for each proc and post Isend
+    st = get_wtime_sec();
+    for (int shift = 1; shift < nproc; shift++)
+    {
+        int p = (my_rank + nproc - shift) % nproc;
+        if (B_scnts[p] == 0) continue;
+        int *p_x_sridxs = B_sridxs + B_sdispls[p];
+        double *p_x_sbuf = x_sbuf + B_sdispls[p];
+        #pragma omp simd
+        for (int i = 0; i < B_scnts[p]; i++) p_x_sbuf[i] = x_local[p_x_sridxs[i]];
+        MPI_Isend(
+            x_sbuf + B_sdispls[p], B_scnts[p], MPI_DOUBLE, 
+            p, my_rank, opt_rp_spmm->comm, x_sreqs + n_send
+        );
+        n_send++;
+    }  // End of p loop
+    et = get_wtime_sec();
+    opt_rp_spmm->t_pack += et - st;
+
+    // 4. Compute C = A_diag * B_diag
+    st = get_wtime_sec();
+    const double d_one = 1.0, d_zero = 0.0;
+    struct matrix_descr mkl_descA;
+    mkl_descA.type = SPARSE_MATRIX_TYPE_GENERAL;
+    mkl_descA.mode = SPARSE_FILL_MODE_FULL;
+    mkl_descA.diag = SPARSE_DIAG_NON_UNIT;
+    sparse_matrix_t mkl_A_diag = (sparse_matrix_t) opt_rp_spmm->mkl_A_diag;
+    mkl_sparse_d_mv(
+        SPARSE_OPERATION_NON_TRANSPOSE, d_one, mkl_A_diag, 
+        mkl_descA, x_local, d_zero, y_local
+    );
+    et = get_wtime_sec();
+    opt_rp_spmm->t_spmm += et - st;
+
+    // 5. Wait for all Isend and Irecv
+    st = get_wtime_sec();
+    MPI_Waitall(n_send, x_sreqs, MPI_STATUSES_IGNORE);
+    MPI_Waitall(n_recv, x_rreqs, MPI_STATUSES_IGNORE);
+    et = get_wtime_sec();
+    opt_rp_spmm->t_comm += et - st;
+
+    // 6. Compute C += A_offd * B_offd
+    st = get_wtime_sec();
+    sparse_matrix_t mkl_A_offd = (sparse_matrix_t) opt_rp_spmm->mkl_A_offd;
+    mkl_sparse_d_mv(
+        SPARSE_OPERATION_NON_TRANSPOSE, d_one, mkl_A_offd,
+        mkl_descA, x_remote, d_one, y_local
+    );
+    et = get_wtime_sec();
+    opt_rp_spmm->t_spmm += et - st;
+
+    // 8. Free work memory
+    free(x_sbuf);
+    free(x_remote);
+    free(x_sreqs);
+    free(x_rreqs);
+
+    double exec_e = get_wtime_sec();
+    opt_rp_spmm->t_exec += exec_e - exec_s;
+    opt_rp_spmm->n_exec++;
+}
+
 // Print statistic info of opt_rp_spmm_p
 void opt_rp_spmm_print_stat(opt_rp_spmm_p opt_rp_spmm)
 {

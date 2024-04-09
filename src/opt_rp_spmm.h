@@ -76,6 +76,14 @@ void opt_rp_spmm_exec(
     double *C_local, const int ldC
 );
 
+// Compute y := A * x
+// Input parameters:
+//   opt_rp_spmm : Pointer to an initialized opt_rp_spmm struct
+//   x_local     : Size opt_rp_spmm->B_local_nrow, local x vector
+// Output parameter:
+//   y_local : Size opt_rp_spmm->A_nrow, local y vector
+void opt_rp_spmv_exec(opt_rp_spmm_p opt_rp_spmm, const double *x_local, double *y_local);
+
 // Print statistic info of an opt_rp_spmm struct
 void opt_rp_spmm_print_stat(opt_rp_spmm_p opt_rp_spmm);
 

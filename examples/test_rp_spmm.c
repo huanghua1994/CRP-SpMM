@@ -144,20 +144,26 @@ int main(int argc, char **argv)
             loc_A_srow, loc_A_nrow, loc_A_rowptr, loc_A_colidx, loc_A_csrval, 
             x_displs, glb_n, MPI_COMM_WORLD, &opt_rp_spmm
         );
-        opt_rp_spmm_exec(opt_rp_spmm, layout, loc_B, loc_B_ld, loc_C, loc_C_ld);  // Warm up
+        if (glb_n > 1) opt_rp_spmm_exec(opt_rp_spmm, layout, loc_B, loc_B_ld, loc_C, loc_C_ld);  // Warm up
+        else opt_rp_spmv_exec(opt_rp_spmm, loc_B, loc_C);
         opt_rp_spmm_clear_stat(opt_rp_spmm);
     }
     for (int i = 0; i < n_test; i++)
     {
         MPI_Barrier(MPI_COMM_WORLD);
         st = get_wtime_sec();
-        if (use_opt == 0) rp_spmm_exec(rp_spmm, layout, loc_B, loc_B_ld, loc_C, loc_C_ld);
-        else opt_rp_spmm_exec(opt_rp_spmm, layout, loc_B, loc_B_ld, loc_C, loc_C_ld);
+        if (use_opt == 0)
+        {
+            rp_spmm_exec(rp_spmm, layout, loc_B, loc_B_ld, loc_C, loc_C_ld);
+        } else {
+            if (glb_n > 1) opt_rp_spmm_exec(opt_rp_spmm, layout, loc_B, loc_B_ld, loc_C, loc_C_ld);
+            else opt_rp_spmv_exec(opt_rp_spmm, loc_B, loc_C);
+        }
         MPI_Barrier(MPI_COMM_WORLD);
         et = get_wtime_sec();
         if (my_rank == 0) 
         {
-            printf("%.2f\n", et - st);
+            printf("%.6f\n", et - st);
             fflush(stdout);
         }
     }
