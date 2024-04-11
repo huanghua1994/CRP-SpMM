@@ -122,15 +122,25 @@ void opt_rp_spmm_init(
     mkl_descA.type = SPARSE_MATRIX_TYPE_GENERAL;
     mkl_descA.mode = SPARSE_FILL_MODE_FULL;
     mkl_descA.diag = SPARSE_DIAG_NON_UNIT;
-    sparse_matrix_t mkl_A_diag, mkl_A_offd;
-    mkl_sparse_d_create_csr(
-        &mkl_A_diag, SPARSE_INDEX_BASE_ZERO, A_nrow, B_local_nrow, 
-        A_diag_rowptr, A_diag_rowptr + 1, A_diag_colidx, A_diag_val
-    );
-    mkl_sparse_d_create_csr(
-        &mkl_A_offd, SPARSE_INDEX_BASE_ZERO, A_nrow, B_remote_nrow, 
-        A_offd_rowptr, A_offd_rowptr + 1, A_offd_colidx, A_offd_val
-    );
+    sparse_matrix_t mkl_A_diag = NULL, mkl_A_offd = NULL;
+    if (B_local_nrow > 0)
+    {
+        mkl_sparse_d_create_csr(
+            &mkl_A_diag, SPARSE_INDEX_BASE_ZERO, A_nrow, B_local_nrow, 
+            A_diag_rowptr, A_diag_rowptr + 1, A_diag_colidx, A_diag_val
+        );
+        if (glb_n > 1) mkl_sparse_set_mm_hint(mkl_A_diag, SPARSE_OPERATION_NON_TRANSPOSE, mkl_descA, SPARSE_LAYOUT_ROW_MAJOR, glb_n, 10);
+        else mkl_sparse_set_mv_hint(mkl_A_diag, SPARSE_OPERATION_NON_TRANSPOSE, mkl_descA, 10);
+    }
+    if (B_remote_nrow > 0)
+    {
+        mkl_sparse_d_create_csr(
+            &mkl_A_offd, SPARSE_INDEX_BASE_ZERO, A_nrow, B_remote_nrow, 
+            A_offd_rowptr, A_offd_rowptr + 1, A_offd_colidx, A_offd_val
+        );
+        if (glb_n > 1) mkl_sparse_set_mm_hint(mkl_A_offd, SPARSE_OPERATION_NON_TRANSPOSE, mkl_descA, SPARSE_LAYOUT_ROW_MAJOR, glb_n, 10);
+        else mkl_sparse_set_mv_hint(mkl_A_offd, SPARSE_OPERATION_NON_TRANSPOSE, mkl_descA, 10);
+    }
     opt_rp_spmm_->mkl_A_diag = (void *) mkl_A_diag;
     opt_rp_spmm_->mkl_A_offd = (void *) mkl_A_offd;
 
@@ -215,8 +225,8 @@ void opt_rp_spmm_free(opt_rp_spmm_p *opt_rp_spmm)
     free(opt_rp_spmm_->A_offd_rowptr);
     free(opt_rp_spmm_->A_offd_colidx);
     free(opt_rp_spmm_->A_offd_val);
-    mkl_sparse_destroy(opt_rp_spmm_->mkl_A_diag);
-    mkl_sparse_destroy(opt_rp_spmm_->mkl_A_offd);
+    if (opt_rp_spmm_->mkl_A_diag != NULL) mkl_sparse_destroy(opt_rp_spmm_->mkl_A_diag);
+    if (opt_rp_spmm_->mkl_A_offd != NULL) mkl_sparse_destroy(opt_rp_spmm_->mkl_A_offd);
     *opt_rp_spmm = NULL;
 }
 
@@ -333,11 +343,23 @@ void opt_rp_spmm_exec(
     mkl_descA.mode = SPARSE_FILL_MODE_FULL;
     mkl_descA.diag = SPARSE_DIAG_NON_UNIT;
     sparse_layout_t layout = (BC_layout == 0) ? SPARSE_LAYOUT_ROW_MAJOR : SPARSE_LAYOUT_COLUMN_MAJOR;
-    sparse_matrix_t mkl_A_diag = (sparse_matrix_t) opt_rp_spmm->mkl_A_diag;
-    mkl_sparse_d_mm(
-        SPARSE_OPERATION_NON_TRANSPOSE, d_one, mkl_A_diag, mkl_descA, 
-        layout, B_local, glb_n, ldB, d_zero, C_local, ldC 
-    );
+    if (B_local_nrow > 0)
+    {
+        sparse_matrix_t mkl_A_diag = (sparse_matrix_t) opt_rp_spmm->mkl_A_diag;
+        mkl_sparse_d_mm(
+            SPARSE_OPERATION_NON_TRANSPOSE, d_one, mkl_A_diag, mkl_descA, 
+            layout, B_local, glb_n, ldB, d_zero, C_local, ldC 
+        );
+    } else {
+        if (BC_layout == 0)
+        {
+            for (int i = 0; i < opt_rp_spmm->A_nrow; i++)
+                memset(C_local + i * ldC, 0, sizeof(double) * glb_n);
+        } else {
+            for (int i = 0; i < glb_n; i++)
+                memset(C_local + i * ldC, 0, sizeof(double) * opt_rp_spmm->A_nrow);
+        }
+    }
     et = get_wtime_sec();
     opt_rp_spmm->t_spmm += et - st;
 
@@ -383,12 +405,15 @@ void opt_rp_spmm_exec(
 
     // 7. Compute C += A_offd * B_offd
     st = get_wtime_sec();
-    int ldBr = (BC_layout == 0) ? glb_n : B_remote_nrow;
-    sparse_matrix_t mkl_A_offd = (sparse_matrix_t) opt_rp_spmm->mkl_A_offd;
-    mkl_sparse_d_mm(
-        SPARSE_OPERATION_NON_TRANSPOSE, d_one, mkl_A_offd, mkl_descA, 
-        layout, B_remote, glb_n, ldBr, d_one, C_local, ldC
-    );
+    if (B_remote_nrow > 0)
+    {
+        int ldBr = (BC_layout == 0) ? glb_n : B_remote_nrow;
+        sparse_matrix_t mkl_A_offd = (sparse_matrix_t) opt_rp_spmm->mkl_A_offd;
+        mkl_sparse_d_mm(
+            SPARSE_OPERATION_NON_TRANSPOSE, d_one, mkl_A_offd, mkl_descA, 
+            layout, B_remote, glb_n, ldBr, d_one, C_local, ldC
+        );
+    }
     et = get_wtime_sec();
     opt_rp_spmm->t_spmm += et - st;
 
@@ -474,11 +499,16 @@ void opt_rp_spmv_exec(opt_rp_spmm_p opt_rp_spmm, const double *x_local, double *
     mkl_descA.type = SPARSE_MATRIX_TYPE_GENERAL;
     mkl_descA.mode = SPARSE_FILL_MODE_FULL;
     mkl_descA.diag = SPARSE_DIAG_NON_UNIT;
-    sparse_matrix_t mkl_A_diag = (sparse_matrix_t) opt_rp_spmm->mkl_A_diag;
-    mkl_sparse_d_mv(
-        SPARSE_OPERATION_NON_TRANSPOSE, d_one, mkl_A_diag, 
-        mkl_descA, x_local, d_zero, y_local
-    );
+    if (B_local_nrow > 0)
+    {
+        sparse_matrix_t mkl_A_diag = (sparse_matrix_t) opt_rp_spmm->mkl_A_diag;
+        mkl_sparse_d_mv(
+            SPARSE_OPERATION_NON_TRANSPOSE, d_one, mkl_A_diag, 
+            mkl_descA, x_local, d_zero, y_local
+        );
+    } else {
+        for (int i = 0; i < opt_rp_spmm->A_nrow; i++) y_local[i] = 0.0;
+    }
     et = get_wtime_sec();
     opt_rp_spmm->t_spmm += et - st;
 
@@ -491,11 +521,14 @@ void opt_rp_spmv_exec(opt_rp_spmm_p opt_rp_spmm, const double *x_local, double *
 
     // 6. Compute C += A_offd * B_offd
     st = get_wtime_sec();
-    sparse_matrix_t mkl_A_offd = (sparse_matrix_t) opt_rp_spmm->mkl_A_offd;
-    mkl_sparse_d_mv(
-        SPARSE_OPERATION_NON_TRANSPOSE, d_one, mkl_A_offd,
-        mkl_descA, x_remote, d_one, y_local
-    );
+    if (B_remote_nrow > 0)
+    {
+        sparse_matrix_t mkl_A_offd = (sparse_matrix_t) opt_rp_spmm->mkl_A_offd;
+        mkl_sparse_d_mv(
+            SPARSE_OPERATION_NON_TRANSPOSE, d_one, mkl_A_offd,
+            mkl_descA, x_remote, d_one, y_local
+        );
+    }
     et = get_wtime_sec();
     opt_rp_spmm->t_spmm += et - st;
 
